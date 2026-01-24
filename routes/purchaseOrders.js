@@ -97,7 +97,7 @@ router.post('/', async (req, res) => {
     if (userId) {
       createAndSendNotification({
         type: 'purchase',
-        title: 'Ibihumbi Nshya',
+        title: 'Ibyaranguwe',
         message: `Purchase order ${po_number} ya FRW ${final_amount.toLocaleString()} yashizwe kuri ${supplierName}`,
         userId: parseInt(userId),
         targetRole: 'superadmin',

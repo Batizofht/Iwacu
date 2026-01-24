@@ -110,7 +110,7 @@ router.post('/', async (req, res) => {
       createAndSendNotification({
         type: 'sale',
         title: 'Ishuri Rishya',
-        message: `${client_name} yagurishije ibicuruzwa bya FRW ${final_amount.toLocaleString()}`,
+        message: `${client_name} yagurishijwe ibicuruzwa bya FRW ${final_amount.toLocaleString()}`,
         userId: parseInt(userId),
         targetRole: 'superadmin',
         entityId: saleId,
