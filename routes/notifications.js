@@ -441,14 +441,30 @@ router.get('/activity-logs', async (req, res) => {
 
     query += ` ORDER BY al.created_at DESC LIMIT ? OFFSET ?`;
     params.push(parseInt(limit), parseInt(offset));
-
-    const [logs] = await pool.query(query, params);
+const [logs] = await pool.query(query, params);
 
     // Parse metadata JSON
-    const parsedLogs = logs.map(log => ({
-      ...log,
-      metadata: log.metadata ? JSON.parse(log.metadata) : null
-    }));
+    const parsedLogs = logs.map((log) => {
+      let metadata = null;
+      if (log.metadata) {
+        if (typeof log.metadata === 'object') {
+          metadata = log.metadata;
+        } else if (typeof log.metadata === 'string') {
+          try {
+            metadata = JSON.parse(log.metadata);
+          } catch {
+            metadata = { raw: log.metadata };
+          }
+        } else {
+          metadata = log.metadata;
+        }
+      }
+
+      return {
+        ...log,
+        metadata
+      };
+    });
 
     res.json({ success: true, data: parsedLogs });
   } catch (error) {

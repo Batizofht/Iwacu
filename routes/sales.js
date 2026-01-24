@@ -109,8 +109,8 @@ router.post('/', async (req, res) => {
     if (userId) {
       createAndSendNotification({
         type: 'sale',
-        title: 'Ishuri Rishya',
-        message: `${client_name} yagurishije ibicuruzwa bya FRW ${final_amount.toLocaleString()}`,
+        title: 'Ibyagurishijwe',
+        message: `${client_name} yagurishijwe ibicuruzwa bya FRW ${final_amount.toLocaleString()}`,
         userId: parseInt(userId),
         targetRole: 'superadmin',
         entityId: saleId,
@@ -206,7 +206,7 @@ router.delete('/:id', async (req, res) => {
         entityType: 'sale',
         entityId: parseInt(id),
         entityName: `Sale #${id}`,
-        description: `yasivye sale #${id} ya FRW ${saleInfo[0].final_amount?.toLocaleString() || 0}`,
+        description: `yasibye sale record #${id} ya FRW ${saleInfo[0].final_amount?.toLocaleString() || 0}`,
         metadata: { final_amount: saleInfo[0].final_amount, client_name: saleInfo[0].client_name }
       });
     }

@@ -88,7 +88,7 @@ router.post('/', async (req, res) => {
         entityType: 'purchase',
         entityId: poId,
         entityName: po_number,
-        description: `yakoze purchase order ${po_number} ya FRW ${final_amount.toLocaleString()} kuri ${supplierName}`,
+        description: `Yakoze purchase order ${po_number} ya FRW ${final_amount.toLocaleString()} kuri ${supplierName}`,
         metadata: { final_amount, items_count: items.length, supplier_name: supplierName }
       }).catch(err => console.error('Activity logging error:', err));
     }
@@ -97,7 +97,7 @@ router.post('/', async (req, res) => {
     if (userId) {
       createAndSendNotification({
         type: 'purchase',
-        title: 'Ibihumbi Nshya',
+        title: 'Ibicuruzwa bishya',
         message: `Purchase order ${po_number} ya FRW ${final_amount.toLocaleString()} yashizwe kuri ${supplierName}`,
         userId: parseInt(userId),
         targetRole: 'superadmin',
