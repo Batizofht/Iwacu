@@ -18,6 +18,7 @@ const salesRoutes = require('./routes/sales');
 const expensesRoutes = require('./routes/expenses');
 const notificationsRoutes = require('./routes/notifications');
 const emailSettingsRoutes = require('./routes/emailSettings');
+const reportsRoutes = require('./routes/reports');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -40,6 +41,7 @@ app.use('/api/sales', salesRoutes);
 app.use('/api/expenses', expensesRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/email-settings', emailSettingsRoutes);
+app.use('/api/reports', reportsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

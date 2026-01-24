@@ -44,18 +44,26 @@ async function createAndSendNotification({
     if (notifications.length > 0) {
       const notification = notifications[0];
 
+      const isEmailTypeAllowed = notification.type === 'sale' || notification.type === 'purchase';
+
       // Get superadmin users to send email notification
       const [superadminUsers] = await pool.query(
-        'SELECT u.notification_email as user_email, ns.notification_email as settings_email, ns.email_notifications FROM users u LEFT JOIN notification_settings ns ON u.id = ns.user_id WHERE u.role = ? AND (u.notification_email IS NOT NULL OR ns.notification_email IS NOT NULL)',
+        'SELECT u.notification_email as user_email, ns.notification_email as settings_email, ns.email_notifications, ns.notify_on_sale, ns.notify_on_purchase FROM users u LEFT JOIN notification_settings ns ON u.id = ns.user_id WHERE u.role = ? AND (u.notification_email IS NOT NULL OR ns.notification_email IS NOT NULL)',
         ['superadmin']
       );
 
       // Send emails to superadmins with email notifications enabled
       for (const admin of superadminUsers) {
         const adminEmail = admin.user_email || admin.settings_email;
-        const emailEnabled = admin.email_notifications || 1; // Default to enabled if not set
+        const emailEnabled = admin.email_notifications === null || admin.email_notifications === undefined
+          ? true
+          : Boolean(admin.email_notifications);
+
+        const typeEnabled = notification.type === 'sale'
+          ? (admin.notify_on_sale === null || admin.notify_on_sale === undefined ? true : Boolean(admin.notify_on_sale))
+          : (admin.notify_on_purchase === null || admin.notify_on_purchase === undefined ? true : Boolean(admin.notify_on_purchase));
         
-        if (adminEmail && emailEnabled) {
+        if (isEmailTypeAllowed && adminEmail && emailEnabled && typeEnabled) {
           try {
             // Send email notification
             await emailService.sendNotification(notification, adminEmail);

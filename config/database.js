@@ -232,6 +232,8 @@ const initDatabase = async () => {
       )
     `);
 
+    await connection.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_email VARCHAR(255) NULL`).catch(() => {});
+
     // Activity logs table - tracks all user actions
     await connection.query(`
       CREATE TABLE IF NOT EXISTS activity_logs (
@@ -288,6 +290,23 @@ const initDatabase = async () => {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    await connection.query(`ALTER TABLE notification_settings ADD COLUMN IF NOT EXISTS notification_email VARCHAR(255) NULL`).catch(() => {});
+
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS email_settings (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        smtp_host VARCHAR(255) NOT NULL DEFAULT '',
+        smtp_port INT NOT NULL DEFAULT 587,
+        smtp_secure BOOLEAN NOT NULL DEFAULT FALSE,
+        smtp_user VARCHAR(255) NOT NULL DEFAULT '',
+        smtp_password TEXT NOT NULL DEFAULT '',
+        notification_email VARCHAR(255) NOT NULL DEFAULT '',
+        is_active BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
 
