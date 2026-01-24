@@ -186,7 +186,8 @@ router.delete('/:id', async (req, res) => {
 
     // Restore stock for each item
     for (const item of items) {
-      const newStock = item.stock + item.quantity;
+      const newStock = Number(item.stock) + Number(item.quantity);
+
       await pool.query(
         'UPDATE items SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [newStock, item.item_id]

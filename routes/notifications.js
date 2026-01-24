@@ -2,6 +2,14 @@ const express = require('express');
 const router = express.Router();
 const { pool } = require('../config/database');
 const emailService = require('../services/emailService');
+const webpush = require('web-push');
+
+// Configure VAPID
+webpush.setVapidDetails(
+  process.env.VAPID_SUBJECT,
+  process.env.VAPID_PUBLIC_KEY,
+  process.env.VAPID_PRIVATE_KEY
+);
 
 // Helper function to create notification and send email
 async function createAndSendNotification({
@@ -42,7 +50,7 @@ async function createAndSendNotification({
         ['superadmin']
       );
 
-      // Send email to all superadmins with email notifications enabled
+      // Send emails to superadmins with email notifications enabled
       for (const admin of superadminUsers) {
         const adminEmail = admin.user_email || admin.settings_email;
         const emailEnabled = admin.email_notifications || 1; // Default to enabled if not set
@@ -54,6 +62,56 @@ async function createAndSendNotification({
             console.log(`📧 Email sent to superadmin: ${adminEmail}`);
           } catch (emailError) {
             console.error(`Failed to send email to ${adminEmail}:`, emailError.message);
+          }
+        }
+      }
+
+      // Send PUSH notifications to all superadmins
+      const [pushSubscriptions] = await pool.query(
+        `SELECT ps.* FROM push_subscriptions ps
+         JOIN users u ON ps.user_id = u.id
+         JOIN notification_settings ns ON u.id = ns.user_id
+         WHERE u.role = 'superadmin' 
+         AND (ns.push_notifications IS NULL OR ns.push_notifications = 1)`,
+      );
+
+      console.log(`📱 Found ${pushSubscriptions.length} push subscriptions`);
+
+      // Send push notification to each subscription
+      for (const sub of pushSubscriptions) {
+        try {
+          const payload = JSON.stringify({
+            title: notification.title,
+            body: notification.message,
+            icon: '/icons/icon.webp',
+            badge: '/icons/badge.png',
+            tag: `notification-${notificationId}`,
+            data: {
+              notificationId,
+              type: notification.type,
+              url: '/'
+            }
+          });
+
+          await webpush.sendNotification(
+            {
+              endpoint: sub.endpoint,
+              keys: {
+                p256dh: sub.p256dh,
+                auth: sub.auth
+              }
+            },
+            payload
+          );
+          
+          console.log(`📱 Push sent to user ${sub.user_id}`);
+        } catch (pushError) {
+          console.error(`Failed to send push to user ${sub.user_id}:`, pushError.message);
+          
+          // If subscription is gone/expired (410), remove it from database
+          if (pushError.statusCode === 410) {
+            await pool.query('DELETE FROM push_subscriptions WHERE id = ?', [sub.id]);
+            console.log(`🗑️ Removed expired subscription for user ${sub.user_id}`);
           }
         }
       }
