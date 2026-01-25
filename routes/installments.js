@@ -36,18 +36,29 @@ router.post('/', async (req, res) => {
       [debtId]
     );
 
-    // Get debt amount
-    const [[{ amount: debt_amount }]] = await pool.query(
-      'SELECT amount FROM debts WHERE id = ?',
+    // Get debt amount + link to sale (if any)
+    const [[debtRow]] = await pool.query(
+      'SELECT amount, description FROM debts WHERE id = ?',
       [debtId]
     );
+    const debt_amount = debtRow?.amount;
 
-    // Update debt status if fully paid
-    if (total_paid >= debt_amount) {
-      await pool.query(
-        "UPDATE debts SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [debtId]
-      );
+    // Update debt status
+    const newDebtStatus = total_paid >= debt_amount ? 'paid' : 'pending';
+    await pool.query(
+      'UPDATE debts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [newDebtStatus, debtId]
+    );
+
+    // If this debt came from a sale, sync the sale status
+    const desc = (debtRow?.description || '').toString();
+    const match = desc.match(/^Sale\s*#(\d+)$/i);
+    if (match) {
+      const saleId = parseInt(match[1]);
+      if (!Number.isNaN(saleId)) {
+        const newSaleStatus = total_paid >= debt_amount ? 'Paid' : 'Partial';
+        await pool.query('UPDATE sales SET status = ? WHERE id = ?', [newSaleStatus, saleId]);
+      }
     }
 
     res.json({
@@ -91,11 +102,12 @@ router.delete('/:id', async (req, res) => {
       [debtId]
     );
 
-    // Get debt amount
-    const [[{ amount: debt_amount }]] = await pool.query(
-      'SELECT amount FROM debts WHERE id = ?',
+    // Get debt amount + link to sale (if any)
+    const [[debtRow]] = await pool.query(
+      'SELECT amount, description FROM debts WHERE id = ?',
       [debtId]
     );
+    const debt_amount = debtRow?.amount;
 
     // Update debt status
     const newStatus = total_paid >= debt_amount ? 'paid' : 'pending';
@@ -103,6 +115,17 @@ router.delete('/:id', async (req, res) => {
       'UPDATE debts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [newStatus, debtId]
     );
+
+    // If this debt came from a sale, sync the sale status
+    const desc = (debtRow?.description || '').toString();
+    const match = desc.match(/^Sale\s*#(\d+)$/i);
+    if (match) {
+      const saleId = parseInt(match[1]);
+      if (!Number.isNaN(saleId)) {
+        const newSaleStatus = total_paid >= debt_amount ? 'Paid' : 'Partial';
+        await pool.query('UPDATE sales SET status = ? WHERE id = ?', [newSaleStatus, saleId]);
+      }
+    }
 
     res.json({ success: true });
   } catch (error) {

@@ -26,9 +26,31 @@ router.get('/', async (req, res) => {
         WHERE si.sale_id = ?
       `, [sale.id]);
 
+      const saleFinalAmount = Number(sale.final_amount) || 0;
+      let paid_so_far = sale.status === 'Paid' ? saleFinalAmount : 0;
+      let balance = Math.max(0, saleFinalAmount - paid_so_far);
+
+      const [linkedDebts] = await pool.query(
+        "SELECT id, amount FROM debts WHERE type = 'debtor' AND description = ? LIMIT 1",
+        [`Sale #${sale.id}`]
+      );
+
+      if (linkedDebts.length > 0) {
+        const debt = linkedDebts[0];
+        const [[{ total_paid }]] = await pool.query(
+          'SELECT COALESCE(SUM(amount), 0) as total_paid FROM debt_installments WHERE debt_id = ?',
+          [debt.id]
+        );
+        const debtAmount = Number(debt.amount) || 0;
+        paid_so_far = Number(total_paid) || 0;
+        balance = Math.max(0, debtAmount - paid_so_far);
+      }
+
       salesWithItems.push({
         ...sale,
-        items
+        items,
+        paid_so_far,
+        balance
       });
     }
 
@@ -42,7 +64,7 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const userId = req.headers['x-user-id'];
-    const { client_id, payment_method, status = 'Paid', total_amount, discount = 0, final_amount, items } = req.body;
+    const { client_id, payment_method, status = 'Paid', total_amount, discount = 0, final_amount, items, paid_amount } = req.body;
     if (!payment_method) return res.status(400).json({ error: 'Payment method is required' });
     if (total_amount === undefined) return res.status(400).json({ error: 'Total amount is required' });
     if (final_amount === undefined) return res.status(400).json({ error: 'Final amount is required' });
@@ -50,17 +72,29 @@ router.post('/', async (req, res) => {
 
     // Get client name
     let client_name = 'Walk-in Customer';
+    let client_phone = '';
+    let client_email = '';
     if (client_id) {
-      const [clients] = await pool.query('SELECT name FROM clients WHERE id = ?', [client_id]);
+      const [clients] = await pool.query('SELECT name, phone, email FROM clients WHERE id = ?', [client_id]);
       if (clients.length > 0) {
         client_name = clients[0].name;
+        client_phone = clients[0].phone || '';
+        client_email = clients[0].email || '';
       }
     }
+
+    const normalizedFinalAmount = Number(final_amount) || 0;
+    const rawPaidAmount = paid_amount === undefined || paid_amount === null
+      ? (status === 'Paid' ? normalizedFinalAmount : 0)
+      : Number(paid_amount);
+    const normalizedPaidAmount = Math.max(0, Math.min(normalizedFinalAmount, Number.isFinite(rawPaidAmount) ? rawPaidAmount : 0));
+    const normalizedStatus = normalizedPaidAmount >= normalizedFinalAmount ? 'Paid' : 'Partial';
+    const remainingAmount = Math.max(0, normalizedFinalAmount - normalizedPaidAmount);
 
     // Create sale record
     const [result] = await pool.query(
       'INSERT INTO sales (date, client_id, client_name, items_count, payment_method, total_amount, discount, final_amount, status) VALUES (CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?)',
-      [client_id || null, client_name, items.length, payment_method, total_amount, discount, final_amount, status]
+      [client_id || null, client_name, items.length, payment_method, total_amount, discount, normalizedFinalAmount, normalizedStatus]
     );
 
     const saleId = result.insertId;
@@ -89,6 +123,28 @@ router.post('/', async (req, res) => {
       );
     }
 
+    // Create debtor record + initial installment (payment history) for partial/loan sales
+    let debtId = null;
+    if (remainingAmount > 0 && client_id) {
+      const due = new Date();
+      due.setDate(due.getDate() + 30);
+      const dueDate = due.toISOString().split('T')[0];
+
+      const debtDescription = `Sale #${saleId}`;
+      const [debtResult] = await pool.query(
+        'INSERT INTO debts (type, person, amount, date, due_date, description, status, phone, email) VALUES (?, ?, ?, CURDATE(), ?, ?, ?, ?, ?)',
+        ['debtor', client_name, normalizedFinalAmount, dueDate, debtDescription, 'pending', client_phone, client_email]
+      );
+      debtId = debtResult.insertId;
+
+      if (normalizedPaidAmount > 0) {
+        await pool.query(
+          'INSERT INTO debt_installments (debt_id, amount, payment_date, notes) VALUES (?, ?, CURDATE(), ?)',
+          [debtId, normalizedPaidAmount, `Initial payment for Sale #${saleId}`]
+        );
+      }
+    }
+
     // Log activity
     if (userId) {
       console.log(`📝 Logging sale activity for user ${userId}`);
@@ -98,8 +154,8 @@ router.post('/', async (req, res) => {
         entityType: 'sale',
         entityId: saleId,
         entityName: `Sale #${saleId}`,
-        description: `yagurishije FRW ${final_amount.toLocaleString()} kuri ${client_name}`,
-        metadata: { final_amount, items_count: items.length, payment_method, client_name }
+        description: `yagurishije FRW ${normalizedFinalAmount.toLocaleString()} kuri ${client_name}`,
+        metadata: { final_amount: normalizedFinalAmount, status: normalizedStatus, items_count: items.length, payment_method, client_name }
       }).catch(err => console.error('Activity logging error:', err));
     } else {
       console.log('⚠️ No userId provided for sale activity logging');
@@ -109,7 +165,7 @@ router.post('/', async (req, res) => {
     if (userId) {
       createAndSendNotification({
         type: 'sale',
-        title: 'Ishuri Rishya',
+        title: 'Ibyagurishijwe',
         message: `${client_name} yagurishijwe ibicuruzwa bya FRW ${final_amount.toLocaleString()}`,
         userId: parseInt(userId),
         targetRole: 'superadmin',
@@ -131,14 +187,17 @@ router.post('/', async (req, res) => {
       client_name,
       client_id,
       payment_method,
-      status,
+      status: normalizedStatus,
       total_amount,
       discount,
-      final_amount,
+      final_amount: normalizedFinalAmount,
       date: new Date().toISOString().split('T')[0],
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       items_count: items.length,
+      paid_amount: normalizedPaidAmount,
+      remaining_amount: remainingAmount,
+      debt_id: debtId,
       items: saleItems.map(item => ({
         ...item,
         item_name: item.item_name || 'Unknown Item',
@@ -159,7 +218,49 @@ router.patch('/:id/status', async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
 
+    if (!status || (status !== 'Paid' && status !== 'Partial')) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
     await pool.query('UPDATE sales SET status = ? WHERE id = ?', [status, id]);
+
+    // Sync linked debt(s) created from this sale
+    const saleId = parseInt(id);
+    if (!Number.isNaN(saleId)) {
+      const [linkedDebts] = await pool.query(
+        "SELECT id, amount FROM debts WHERE type = 'debtor' AND description = ?",
+        [`Sale #${saleId}`]
+      );
+
+      for (const debt of linkedDebts) {
+        const [[{ total_paid }]] = await pool.query(
+          'SELECT COALESCE(SUM(amount), 0) as total_paid FROM debt_installments WHERE debt_id = ?',
+          [debt.id]
+        );
+        const debtAmount = Number(debt.amount) || 0;
+        const paid = Number(total_paid) || 0;
+        const balance = Math.max(0, debtAmount - paid);
+
+        if (status === 'Paid') {
+          if (balance > 0) {
+            await pool.query(
+              'INSERT INTO debt_installments (debt_id, amount, payment_date, notes) VALUES (?, ?, CURDATE(), ?)',
+              [debt.id, balance, `Auto close from Sale #${saleId} marked Paid`]
+            );
+          }
+          await pool.query(
+            "UPDATE debts SET status = 'paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            [debt.id]
+          );
+        } else {
+          const computedStatus = paid >= debtAmount ? 'paid' : 'pending';
+          await pool.query(
+            'UPDATE debts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [computedStatus, debt.id]
+          );
+        }
+      }
+    }
 
     res.json({ success: true, id, status });
   } catch (error) {
@@ -206,7 +307,7 @@ router.delete('/:id', async (req, res) => {
         entityType: 'sale',
         entityId: parseInt(id),
         entityName: `Sale #${id}`,
-        description: `yasivye sale #${id} ya FRW ${saleInfo[0].final_amount?.toLocaleString() || 0}`,
+        description: `yasibye sale record #${id} ya FRW ${saleInfo[0].final_amount?.toLocaleString() || 0}`,
         metadata: { final_amount: saleInfo[0].final_amount, client_name: saleInfo[0].client_name }
       });
     }

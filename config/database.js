@@ -323,6 +323,34 @@ const initDatabase = async () => {
       )
     `);
 
+    // Store/Company settings table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS store_settings (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        shop_name VARCHAR(255) NOT NULL DEFAULT 'My Shop',
+        phone VARCHAR(50),
+        email VARCHAR(255),
+        country VARCHAR(100),
+        major_city VARCHAR(100),
+        city_two VARCHAR(100),
+        address TEXT,
+        logo_url VARCHAR(500),
+        currency VARCHAR(10) DEFAULT 'FRW',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Seed default store settings if not exists
+    const [existingSettings] = await connection.query('SELECT id FROM store_settings LIMIT 1');
+    if (existingSettings.length === 0) {
+      await connection.query(
+        `INSERT INTO store_settings (shop_name, currency) VALUES (?, ?)`,
+        ['My Shop', 'FRW']
+      );
+      console.log('✅ Default store settings created');
+    }
+
     // Add user_id columns to existing tables (for tracking who did what)
     await connection.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS created_by INT`).catch(() => {});
     await connection.query(`ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS created_by INT`).catch(() => {});

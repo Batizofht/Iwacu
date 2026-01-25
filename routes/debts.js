@@ -119,6 +119,17 @@ router.put('/:id', async (req, res) => {
       [type, person, amount, date, due_date || null, description || '', status, phone || '', email || '', id]
     );
 
+    // If this debt came from a sale, sync the sale status
+    const desc = (description || '').toString();
+    const match = desc.match(/^Sale\s*#(\d+)$/i);
+    if (match) {
+      const saleId = parseInt(match[1]);
+      if (!Number.isNaN(saleId)) {
+        const saleStatus = status === 'paid' ? 'Paid' : 'Partial';
+        await pool.query('UPDATE sales SET status = ? WHERE id = ?', [saleStatus, saleId]);
+      }
+    }
+
     res.json({
       success: true,
       data: {

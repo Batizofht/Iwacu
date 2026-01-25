@@ -441,8 +441,7 @@ router.get('/activity-logs', async (req, res) => {
 
     query += ` ORDER BY al.created_at DESC LIMIT ? OFFSET ?`;
     params.push(parseInt(limit), parseInt(offset));
-
-    const [logs] = await pool.query(query, params);
+const [logs] = await pool.query(query, params);
 
     // Parse metadata JSON
     const parsedLogs = logs.map((log) => {
