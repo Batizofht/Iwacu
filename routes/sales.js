@@ -100,13 +100,15 @@ router.post('/', async (req, res) => {
     const saleId = result.insertId;
 
     // Insert sale items and update stock
+    let priceUpdates = [];
     for (const item of items) {
       // Get item details
-      const [itemDetails] = await pool.query('SELECT name, stock FROM items WHERE id = ?', [item.item_id]);
+      const [itemDetails] = await pool.query('SELECT name, stock, price FROM items WHERE id = ?', [item.item_id]);
       if (itemDetails.length === 0) continue;
 
       const itemName = itemDetails[0].name;
       const currentStock = itemDetails[0].stock;
+      const currentPrice = itemDetails[0].price;
       const newStock = Math.max(0, currentStock - item.quantity);
       const totalPrice = item.quantity * item.unit_price;
 
@@ -121,6 +123,16 @@ router.post('/', async (req, res) => {
         'UPDATE items SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [newStock, item.item_id]
       );
+
+      // Update item price if it has changed (automatic price update feature)
+      if (item.unit_price !== currentPrice) {
+        console.log(`🔄 Updating price for item ${itemName} (ID: ${item.item_id}): ${currentPrice} -> ${item.unit_price}`);
+        await pool.query(
+          'UPDATE items SET price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          [item.unit_price, item.item_id]
+        );
+        priceUpdates.push({ itemName, oldPrice: currentPrice, newPrice: item.unit_price });
+      }
     }
 
     // Create debtor record + initial installment (payment history) for partial/loan sales
@@ -148,7 +160,9 @@ router.post('/', async (req, res) => {
     // Log activity
     if (userId) {
       console.log(`📝 Logging sale activity for user ${userId}`);
-      logActivity({
+      
+      // Main sale activity
+      await logActivity({
         userId: parseInt(userId),
         actionType: 'create',
         entityType: 'sale',
@@ -156,7 +170,31 @@ router.post('/', async (req, res) => {
         entityName: `Sale #${saleId}`,
         description: `yagurishije FRW ${normalizedFinalAmount.toLocaleString()} kuri ${client_name}`,
         metadata: { final_amount: normalizedFinalAmount, status: normalizedStatus, items_count: items.length, payment_method, client_name }
-      }).catch(err => console.error('Activity logging error:', err));
+      });
+
+      // Log price updates if any
+      if (priceUpdates.length > 0) {
+        for (const update of priceUpdates) {
+          // Find the item ID for this update
+          const soldItem = items.find(item => item.unit_price === update.newPrice);
+          const itemId = soldItem ? soldItem.item_id : null;
+          
+          await logActivity({
+            userId: parseInt(userId),
+            actionType: 'update',
+            entityType: 'item',
+            entityId: itemId,
+            entityName: update.itemName,
+            description: `yahinduriye ibiciro bya "${update.itemName}" kuri FRW ${update.newPrice.toLocaleString()}`,
+            metadata: { 
+              oldPrice: update.oldPrice, 
+              newPrice: update.newPrice, 
+              saleId: saleId,
+              updatedDuringSale: true
+            }
+          });
+        }
+      }
     } else {
       console.log('⚠️ No userId provided for sale activity logging');
     }
