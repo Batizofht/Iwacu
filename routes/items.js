@@ -38,6 +38,14 @@ router.post('/', async (req, res) => {
     if (price === undefined) return res.status(400).json({ error: 'Price is required' });
     if (cost === undefined) return res.status(400).json({ error: 'Cost is required' });
 
+    const [existingName] = await pool.query(
+      'SELECT id FROM items WHERE LOWER(name) = LOWER(?) LIMIT 1',
+      [String(name).trim()]
+    );
+    if (existingName.length > 0) {
+      return res.status(400).json({ error: 'Item name already exists' });
+    }
+
     const [result] = await pool.query(
       'INSERT INTO items (name, sku, status, category_id, price, cost, min_stock, description, stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [name, sku || '', status, category || null, price, cost, minStock, description || '', stock]
@@ -68,6 +76,14 @@ router.put('/:id', async (req, res) => {
     if (!name) return res.status(400).json({ error: 'Name is required' });
     if (price === undefined) return res.status(400).json({ error: 'Price is required' });
     if (cost === undefined) return res.status(400).json({ error: 'Cost is required' });
+
+    const [existingName] = await pool.query(
+      'SELECT id FROM items WHERE LOWER(name) = LOWER(?) AND id != ? LIMIT 1',
+      [String(name).trim(), id]
+    );
+    if (existingName.length > 0) {
+      return res.status(400).json({ error: 'Item name already exists' });
+    }
 
     if (category) {
       await pool.query(
