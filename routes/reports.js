@@ -71,6 +71,9 @@ router.get('/sales', async (req, res) => {
     if (status && status !== 'all') {
       where.push('s.status = ?');
       params.push(status);
+    } else {
+      where.push('s.status = ?');
+      params.push('Paid');
     }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -105,13 +108,14 @@ router.get('/sales', async (req, res) => {
         COALESCE(i.sku, '') AS sku,
         COALESCE(c.name, '') AS category,
         COALESCE(SUM(si.quantity), 0) AS qty,
-        COALESCE(SUM(si.total_price), 0) AS revenue
+        COALESCE(SUM(si.quantity * si.unit_price), 0) AS revenue,
+        COALESCE(SUM(si.quantity * si.unit_price), 0) - (COALESCE(SUM(si.quantity), 0) * COALESCE(i.cost, 0)) AS profit
       FROM sale_items si
       JOIN sales s ON si.sale_id = s.id
       LEFT JOIN items i ON si.item_id = i.id
       LEFT JOIN categories c ON i.category_id = c.id
       ${whereSql}
-      GROUP BY si.item_id, item_name, sku, category
+      GROUP BY si.item_id, i.id, i.name, i.sku, c.id, c.name
       ORDER BY qty DESC
       LIMIT ? OFFSET ?`,
       topItemsParams
@@ -166,6 +170,9 @@ router.get('/purchases', async (req, res) => {
     if (status && status !== 'all') {
       where.push('po.status = ?');
       params.push(status);
+    } else {
+      where.push('(po.status = ? OR po.status = ?)');
+      params.push('completed', 'received');
     }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -198,13 +205,14 @@ router.get('/purchases', async (req, res) => {
         COALESCE(i.sku, '') AS sku,
         COALESCE(c.name, '') AS category,
         COALESCE(SUM(poi.quantity), 0) AS qty,
-        COALESCE(SUM(poi.total_price), 0) AS spent
+        COALESCE(SUM(poi.quantity * poi.unit_price), 0) AS spent,
+        COALESCE(SUM(poi.quantity * poi.unit_price), 0) - (COALESCE(SUM(poi.quantity), 0) * COALESCE(i.cost, 0)) AS cost_variance
       FROM purchase_order_items poi
       JOIN purchase_orders po ON poi.purchase_order_id = po.id
       LEFT JOIN items i ON poi.item_id = i.id
       LEFT JOIN categories c ON i.category_id = c.id
       ${whereSql}
-      GROUP BY poi.item_id, item_name, sku, category
+      GROUP BY poi.item_id, i.id, i.name, i.sku, c.id, c.name
       ORDER BY qty DESC
       LIMIT ? OFFSET ?`,
       topItemsParams
@@ -226,5 +234,6 @@ router.get('/purchases', async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
 
 module.exports = router;
