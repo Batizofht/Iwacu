@@ -4,6 +4,21 @@ const { pool } = require('../config/database');
 const { logActivity } = require('../utils/activityLogger');
 const { createAndSendNotification } = require('./notifications');
 
+// Helper function to update previous_stock table
+async function updatePreviousStock(itemId, newStock) {
+  try {
+    await pool.query(`
+      INSERT INTO previous_stock (item_id, stock_quantity)
+      VALUES (?, ?)
+      ON DUPLICATE KEY UPDATE 
+      stock_quantity = VALUES(stock_quantity),
+      last_updated = CURRENT_TIMESTAMP
+    `, [itemId, newStock]);
+  } catch (error) {
+    console.error('Error updating previous_stock:', error);
+  }
+}
+
 // GET all sales
 router.get('/', async (req, res) => {
   try {
@@ -25,6 +40,15 @@ router.get('/', async (req, res) => {
         LEFT JOIN items i ON si.item_id = i.id
         WHERE si.sale_id = ?
       `, [sale.id]);
+
+      // Fetch client phone if client_id exists
+      let client_phone = '';
+      if (sale.client_id) {
+        const [clients] = await pool.query('SELECT phone FROM clients WHERE id = ?', [sale.client_id]);
+        if (clients.length > 0) {
+          client_phone = clients[0].phone || '';
+        }
+      }
 
       const saleFinalAmount = Number(sale.final_amount) || 0;
       let paid_so_far = sale.status === 'Paid' ? saleFinalAmount : 0;
@@ -48,6 +72,7 @@ router.get('/', async (req, res) => {
 
       salesWithItems.push({
         ...sale,
+        client_phone,
         items,
         paid_so_far,
         balance
@@ -123,6 +148,9 @@ router.post('/', async (req, res) => {
         'UPDATE items SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [newStock, item.item_id]
       );
+
+      // Update previous_stock table
+      await updatePreviousStock(item.item_id, newStock);
 
       // Update item price if it has changed (automatic price update feature)
       if (item.unit_price !== currentPrice) {

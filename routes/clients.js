@@ -12,6 +12,20 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET client by ID
+router.get('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [clients] = await pool.query('SELECT * FROM clients WHERE id = ?', [id]);
+    if (clients.length === 0) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+    res.json(clients[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // CREATE client
 router.post('/', async (req, res) => {
   try {

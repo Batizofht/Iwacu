@@ -99,6 +99,13 @@ router.get('/product/:id', async (req, res) => {
       SELECT stock FROM items WHERE id = ?
     `, [id]);
 
+    // Get previous stock from previous_stock table
+    const [previousStockRows] = await pool.query(`
+      SELECT stock_quantity FROM previous_stock WHERE item_id = ?
+    `, [id]);
+    
+    const previousStock = previousStockRows[0]?.stock_quantity || 0;
+
     // Get recent sales
     const [recentSales] = await pool.query(`
       SELECT 
@@ -148,7 +155,8 @@ router.get('/product/:id', async (req, res) => {
       item_name: product.name,
       sku: product.sku,
       category: product.category,
-      current_stock: stockData.stock || 0,
+      current_stock: stockRows[0]?.stock || 0,
+      previous_stock: previousStock,
       total_sold: salesData.total_quantity || 0,
       sales_revenue: salesData.total_revenue || 0,
       total_purchased: purchaseData.total_purchased || 0,

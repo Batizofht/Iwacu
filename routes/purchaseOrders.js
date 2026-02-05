@@ -4,6 +4,21 @@ const { pool } = require('../config/database');
 const { logActivity } = require('../utils/activityLogger');
 const { createAndSendNotification } = require('./notifications');
 
+// Helper function to update previous_stock table
+async function updatePreviousStock(itemId, newStock) {
+  try {
+    await pool.query(`
+      INSERT INTO previous_stock (item_id, stock_quantity)
+      VALUES (?, ?)
+      ON DUPLICATE KEY UPDATE 
+      stock_quantity = VALUES(stock_quantity),
+      last_updated = CURRENT_TIMESTAMP
+    `, [itemId, newStock]);
+  } catch (error) {
+    console.error('Error updating previous_stock:', error);
+  }
+}
+
 // GET all purchase orders
 router.get('/', async (req, res) => {
   try {
@@ -201,10 +216,17 @@ router.patch('/:id/status', async (req, res) => {
       );
 
       for (const item of items) {
+        // Get current stock to calculate new stock
+        const [currentStock] = await pool.query('SELECT stock FROM items WHERE id = ?', [item.item_id]);
+        const newStock = (currentStock[0]?.stock || 0) + item.quantity;
+        
         await pool.query(
           'UPDATE items SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
           [item.quantity, item.item_id]
         );
+
+        // Update previous_stock table
+        await updatePreviousStock(item.item_id, newStock);
       }
     }
 
@@ -264,6 +286,9 @@ router.delete('/:id', async (req, res) => {
         'UPDATE items SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [newStock, item.item_id]
       );
+
+      // Update previous_stock table
+      await updatePreviousStock(item.item_id, newStock);
     }
 
     await pool.query('DELETE FROM purchase_order_items WHERE purchase_order_id = ?', [id]);
