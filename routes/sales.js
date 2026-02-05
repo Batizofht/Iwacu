@@ -4,18 +4,27 @@ const { pool } = require('../config/database');
 const { logActivity } = require('../utils/activityLogger');
 const { createAndSendNotification } = require('./notifications');
 
-// Helper function to update previous_stock table
-async function updatePreviousStock(itemId, newStock) {
+// Auto-migrate: Add previous_stock column to items table if it doesn't exist
+(async () => {
   try {
-    await pool.query(`
-      INSERT INTO previous_stock (item_id, stock_quantity)
-      VALUES (?, ?)
-      ON DUPLICATE KEY UPDATE 
-      stock_quantity = VALUES(stock_quantity),
-      last_updated = CURRENT_TIMESTAMP
-    `, [itemId, newStock]);
+    await pool.query(`ALTER TABLE items ADD COLUMN IF NOT EXISTS previous_stock DECIMAL(15,3) DEFAULT 0`);
+    // Initialize previous_stock with current stock for items that have 0
+    await pool.query(`UPDATE items SET previous_stock = stock WHERE previous_stock = 0 OR previous_stock IS NULL`);
+    console.log('✅ Items previous_stock column ready');
+  } catch (err) {
+    console.log('Items migration:', err.message);
+  }
+})();
+
+// Helper function to save current stock to previous_stock BEFORE updating
+async function savePreviousStock(itemId, currentStock) {
+  try {
+    await pool.query(
+      'UPDATE items SET previous_stock = ? WHERE id = ?',
+      [currentStock, itemId]
+    );
   } catch (error) {
-    console.error('Error updating previous_stock:', error);
+    console.error('Error saving previous_stock:', error);
   }
 }
 
@@ -143,14 +152,14 @@ router.post('/', async (req, res) => {
         [saleId, item.item_id, itemName, item.quantity, item.unit_price, totalPrice]
       );
 
+      // Save current stock to previous_stock BEFORE updating
+      await savePreviousStock(item.item_id, currentStock);
+
       // Update stock
       await pool.query(
         'UPDATE items SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [newStock, item.item_id]
       );
-
-      // Update previous_stock table
-      await updatePreviousStock(item.item_id, newStock);
 
       // Update item price if it has changed (automatic price update feature)
       if (item.unit_price !== currentPrice) {

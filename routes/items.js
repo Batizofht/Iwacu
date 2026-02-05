@@ -2,18 +2,15 @@ const express = require('express');
 const router = express.Router();
 const { pool } = require('../config/database');
 
-// Helper function to update previous_stock table
-async function updatePreviousStock(itemId, newStock) {
+// Helper function to save current stock to previous_stock in items table
+async function savePreviousStock(itemId, currentStock) {
   try {
-    await pool.query(`
-      INSERT INTO previous_stock (item_id, stock_quantity)
-      VALUES (?, ?)
-      ON DUPLICATE KEY UPDATE 
-      stock_quantity = VALUES(stock_quantity),
-      last_updated = CURRENT_TIMESTAMP
-    `, [itemId, newStock]);
+    await pool.query(
+      'UPDATE items SET previous_stock = ? WHERE id = ?',
+      [currentStock, itemId]
+    );
   } catch (error) {
-    console.error('Error updating previous_stock:', error);
+    console.error('Error saving previous_stock:', error);
   }
 }
 
@@ -66,8 +63,8 @@ router.post('/', async (req, res) => {
       [name, sku || '', status, category || null, price, cost, minStock, description || '', stock]
     );
 
-    // Update previous_stock table
-    await updatePreviousStock(result.insertId, stock);
+    // Initialize previous_stock with the initial stock value
+    await savePreviousStock(result.insertId, stock);
 
     res.json({
       id: result.insertId,
@@ -140,8 +137,8 @@ router.put('/:id', async (req, res) => {
 
     await connection.commit();
     
-    // Update previous_stock table
-    await updatePreviousStock(id, stock);
+    // Save current stock to previous_stock
+    await savePreviousStock(id, stock);
     
     res.json({ message: 'Updated successfully' });
   } catch (error) {

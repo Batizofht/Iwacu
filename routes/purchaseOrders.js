@@ -4,18 +4,15 @@ const { pool } = require('../config/database');
 const { logActivity } = require('../utils/activityLogger');
 const { createAndSendNotification } = require('./notifications');
 
-// Helper function to update previous_stock table
-async function updatePreviousStock(itemId, newStock) {
+// Helper function to save current stock to previous_stock in items table
+async function savePreviousStock(itemId, currentStock) {
   try {
-    await pool.query(`
-      INSERT INTO previous_stock (item_id, stock_quantity)
-      VALUES (?, ?)
-      ON DUPLICATE KEY UPDATE 
-      stock_quantity = VALUES(stock_quantity),
-      last_updated = CURRENT_TIMESTAMP
-    `, [itemId, newStock]);
+    await pool.query(
+      'UPDATE items SET previous_stock = ? WHERE id = ?',
+      [currentStock, itemId]
+    );
   } catch (error) {
-    console.error('Error updating previous_stock:', error);
+    console.error('Error saving previous_stock:', error);
   }
 }
 
@@ -217,16 +214,16 @@ router.patch('/:id/status', async (req, res) => {
 
       for (const item of items) {
         // Get current stock to calculate new stock
-        const [currentStock] = await pool.query('SELECT stock FROM items WHERE id = ?', [item.item_id]);
-        const newStock = (currentStock[0]?.stock || 0) + item.quantity;
+        const [currentStockRows] = await pool.query('SELECT stock FROM items WHERE id = ?', [item.item_id]);
+        const currentStock = currentStockRows[0]?.stock || 0;
+        
+        // Save current stock to previous_stock BEFORE updating
+        await savePreviousStock(item.item_id, currentStock);
         
         await pool.query(
           'UPDATE items SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
           [item.quantity, item.item_id]
         );
-
-        // Update previous_stock table
-        await updatePreviousStock(item.item_id, newStock);
       }
     }
 
@@ -281,14 +278,14 @@ router.delete('/:id', async (req, res) => {
     `, [id]);
 
     for (const item of items) {
+      // Save current stock to previous_stock BEFORE updating
+      await savePreviousStock(item.item_id, item.stock);
+      
       const newStock = item.stock - item.quantity;
       await pool.query(
         'UPDATE items SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [newStock, item.item_id]
       );
-
-      // Update previous_stock table
-      await updatePreviousStock(item.item_id, newStock);
     }
 
     await pool.query('DELETE FROM purchase_order_items WHERE purchase_order_id = ?', [id]);

@@ -94,17 +94,12 @@ router.get('/product/:id', async (req, res) => {
       ${dateFilter ? dateFilter.replace('s.date', 'po.date') : ''}
     `, [id]);
 
-    // Get current stock
+    // Get current stock and previous_stock from items table
     const [stockRows] = await pool.query(`
-      SELECT stock FROM items WHERE id = ?
-    `, [id]);
-
-    // Get previous stock from previous_stock table
-    const [previousStockRows] = await pool.query(`
-      SELECT stock_quantity FROM previous_stock WHERE item_id = ?
+      SELECT stock, COALESCE(previous_stock, stock) as previous_stock FROM items WHERE id = ?
     `, [id]);
     
-    const previousStock = previousStockRows[0]?.stock_quantity || 0;
+    const previousStock = stockRows[0]?.previous_stock || 0;
 
     // Get recent sales
     const [recentSales] = await pool.query(`
