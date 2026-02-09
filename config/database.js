@@ -341,6 +341,75 @@ const initDatabase = async () => {
       )
     `);
 
+    // Kitchen items table for food/kitchen stock management
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS kitchen_items (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        name VARCHAR(255) NOT NULL,
+        category VARCHAR(100) NOT NULL,
+        unit VARCHAR(50) NOT NULL DEFAULT 'kg',
+        current_stock DECIMAL(10,3) DEFAULT 0,
+        min_stock DECIMAL(10,3) DEFAULT 5,
+        unit_cost DECIMAL(10,2) DEFAULT 0,
+        description TEXT,
+        supplier_name VARCHAR(255),
+        status ENUM('active', 'inactive', 'deleted') DEFAULT 'active',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('Kitchen items migration: ✅');
+
+    // Kitchen stock movements table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS kitchen_movements (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        kitchen_item_id INT NOT NULL,
+        movement_type ENUM('stock_in', 'stock_out', 'adjustment') NOT NULL,
+        quantity_change DECIMAL(10,3) NOT NULL,
+        unit_cost DECIMAL(10,2) DEFAULT 0,
+        notes TEXT,
+        used_for VARCHAR(255),
+        created_by INT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (kitchen_item_id) REFERENCES kitchen_items(id) ON DELETE CASCADE
+      )
+    `);
+    console.log('Kitchen movements migration: ✅');
+
+    // Seed default kitchen categories if table is empty
+    const [existingKitchenItems] = await connection.query('SELECT COUNT(*) as count FROM kitchen_items');
+    if (existingKitchenItems[0].count === 0) {
+      const defaultKitchenItems = [
+        { name: 'Rice', category: 'Grains', unit: 'kg', min_stock: 10, unit_cost: 1500 },
+        { name: 'Beans', category: 'Grains', unit: 'kg', min_stock: 10, unit_cost: 1200 },
+        { name: 'Maize Flour', category: 'Grains', unit: 'kg', min_stock: 10, unit_cost: 800 },
+        { name: 'Cooking Oil', category: 'Cooking Oil', unit: 'L', min_stock: 5, unit_cost: 3500 },
+        { name: 'Sugar', category: 'Spices', unit: 'kg', min_stock: 5, unit_cost: 1800 },
+        { name: 'Salt', category: 'Spices', unit: 'kg', min_stock: 3, unit_cost: 500 },
+        { name: 'Tomatoes', category: 'Vegetables', unit: 'kg', min_stock: 5, unit_cost: 1000 },
+        { name: 'Onions', category: 'Vegetables', unit: 'kg', min_stock: 5, unit_cost: 800 },
+        { name: 'Potatoes', category: 'Vegetables', unit: 'kg', min_stock: 10, unit_cost: 600 },
+        { name: 'Cabbage', category: 'Vegetables', unit: 'pcs', min_stock: 5, unit_cost: 500 },
+        { name: 'Meat (Beef)', category: 'Meat', unit: 'kg', min_stock: 5, unit_cost: 5000 },
+        { name: 'Chicken', category: 'Meat', unit: 'kg', min_stock: 5, unit_cost: 4500 },
+        { name: 'Fish', category: 'Meat', unit: 'kg', min_stock: 3, unit_cost: 4000 },
+        { name: 'Eggs', category: 'Dairy', unit: 'pcs', min_stock: 30, unit_cost: 200 },
+        { name: 'Milk', category: 'Dairy', unit: 'L', min_stock: 5, unit_cost: 1000 },
+        { name: 'Bread', category: 'Bakery', unit: 'pcs', min_stock: 10, unit_cost: 500 },
+        { name: 'Tea Leaves', category: 'Beverages', unit: 'kg', min_stock: 2, unit_cost: 2500 },
+        { name: 'Coffee', category: 'Beverages', unit: 'kg', min_stock: 1, unit_cost: 5000 }
+      ];
+      
+      for (const item of defaultKitchenItems) {
+        await connection.query(
+          `INSERT INTO kitchen_items (name, category, unit, current_stock, min_stock, unit_cost, status) VALUES (?, ?, ?, 0, ?, ?, 'active')`,
+          [item.name, item.category, item.unit, item.min_stock, item.unit_cost]
+        );
+      }
+      console.log('✅ Default kitchen items seeded');
+    }
+
     // Seed default store settings if not exists
     const [existingSettings] = await connection.query('SELECT id FROM store_settings LIMIT 1');
     if (existingSettings.length === 0) {

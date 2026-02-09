@@ -227,4 +227,261 @@ router.get('/purchases', async (req, res) => {
   }
 });
 
+// Expenses report (summary + breakdown by category)
+router.get('/expenses', async (req, res) => {
+  try {
+    const user = await requireReportsPermission(req, res);
+    if (!user) return;
+
+    const startDate = parseDate(req.query.startDate);
+    const endDate = parseDate(req.query.endDate);
+
+    const where = [];
+    const params = [];
+
+    if (startDate) {
+      where.push('DATE(e.date) >= ?');
+      params.push(startDate);
+    }
+    if (endDate) {
+      where.push('DATE(e.date) <= ?');
+      params.push(endDate);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const [[summary]] = await pool.query(
+      `SELECT
+        COUNT(*) AS expenses_count,
+        COALESCE(SUM(amount), 0) AS total_amount
+      FROM expenses e
+      ${whereSql}`,
+      params
+    );
+
+    const [byCategory] = await pool.query(
+      `SELECT
+        category,
+        COUNT(*) AS count,
+        COALESCE(SUM(amount), 0) AS total
+      FROM expenses e
+      ${whereSql}
+      GROUP BY category
+      ORDER BY total DESC`,
+      params
+    );
+
+    const [recentExpenses] = await pool.query(
+      `SELECT id, person, amount, description, category, date
+      FROM expenses e
+      ${whereSql}
+      ORDER BY date DESC, created_at DESC
+      LIMIT 50`,
+      params
+    );
+
+    res.json({
+      success: true,
+      summary: {
+        expenses_count: Number(summary?.expenses_count || 0),
+        total_amount: Number(summary?.total_amount || 0)
+      },
+      byCategory,
+      recentExpenses
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Debts report (summary + breakdown)
+router.get('/debts', async (req, res) => {
+  try {
+    const user = await requireReportsPermission(req, res);
+    if (!user) return;
+
+    const startDate = parseDate(req.query.startDate);
+    const endDate = parseDate(req.query.endDate);
+    const type = req.query.type; // 'debtor' or 'creditor'
+
+    const where = [];
+    const params = [];
+
+    if (startDate) {
+      where.push('DATE(d.date) >= ?');
+      params.push(startDate);
+    }
+    if (endDate) {
+      where.push('DATE(d.date) <= ?');
+      params.push(endDate);
+    }
+    if (type && (type === 'debtor' || type === 'creditor')) {
+      where.push('d.type = ?');
+      params.push(type);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const [[summary]] = await pool.query(
+      `SELECT
+        COUNT(*) AS total_count,
+        COALESCE(SUM(CASE WHEN type = 'debtor' THEN amount ELSE 0 END), 0) AS total_receivable,
+        COALESCE(SUM(CASE WHEN type = 'creditor' THEN amount ELSE 0 END), 0) AS total_payable,
+        COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) AS pending_amount,
+        COALESCE(SUM(CASE WHEN status = 'overdue' THEN amount ELSE 0 END), 0) AS overdue_amount,
+        COALESCE(SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END), 0) AS paid_amount
+      FROM debts d
+      ${whereSql}`,
+      params
+    );
+
+    const [byStatus] = await pool.query(
+      `SELECT
+        status,
+        type,
+        COUNT(*) AS count,
+        COALESCE(SUM(amount), 0) AS total
+      FROM debts d
+      ${whereSql}
+      GROUP BY status, type
+      ORDER BY type, status`,
+      params
+    );
+
+    const [unpaidDebts] = await pool.query(
+      `SELECT 
+        d.*,
+        COALESCE(SUM(i.amount), 0) as total_paid,
+        (d.amount - COALESCE(SUM(i.amount), 0)) as balance
+      FROM debts d
+      LEFT JOIN debt_installments i ON d.id = i.debt_id
+      ${whereSql ? whereSql + ' AND' : 'WHERE'} d.status != 'paid'
+      GROUP BY d.id
+      ORDER BY d.due_date ASC, d.amount DESC
+      LIMIT 100`,
+      params
+    );
+
+    res.json({
+      success: true,
+      summary: {
+        total_count: Number(summary?.total_count || 0),
+        total_receivable: Number(summary?.total_receivable || 0),
+        total_payable: Number(summary?.total_payable || 0),
+        pending_amount: Number(summary?.pending_amount || 0),
+        overdue_amount: Number(summary?.overdue_amount || 0),
+        paid_amount: Number(summary?.paid_amount || 0),
+        net_balance: Number(summary?.total_receivable || 0) - Number(summary?.total_payable || 0)
+      },
+      byStatus,
+      unpaidDebts
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// General/Quick report (combined summary)
+router.get('/general', async (req, res) => {
+  try {
+    const user = await requireReportsPermission(req, res);
+    if (!user) return;
+
+    const startDate = parseDate(req.query.startDate);
+    const endDate = parseDate(req.query.endDate);
+
+    const dateFilter = startDate && endDate;
+    
+    // Sales summary
+    const salesWhere = dateFilter ? 'WHERE DATE(date) >= ? AND DATE(date) <= ?' : '';
+    const salesParams = dateFilter ? [startDate, endDate] : [];
+    
+    const [[salesSummary]] = await pool.query(
+      `SELECT
+        COUNT(DISTINCT id) AS count,
+        COALESCE(SUM(final_amount), 0) AS revenue
+      FROM sales ${salesWhere}`,
+      salesParams
+    );
+
+    // Purchases summary
+    const [[purchasesSummary]] = await pool.query(
+      `SELECT
+        COUNT(DISTINCT id) AS count,
+        COALESCE(SUM(final_amount), 0) AS spent
+      FROM purchase_orders ${salesWhere.replace('date', 'date')}`,
+      salesParams
+    );
+
+    // Expenses summary
+    const [[expensesSummary]] = await pool.query(
+      `SELECT
+        COUNT(*) AS count,
+        COALESCE(SUM(amount), 0) AS total
+      FROM expenses ${salesWhere.replace('date', 'date')}`,
+      salesParams
+    );
+
+    // Debts summary (current state, not filtered by date)
+    const [[debtsSummary]] = await pool.query(
+      `SELECT
+        COALESCE(SUM(CASE WHEN type = 'debtor' AND status != 'paid' THEN amount ELSE 0 END), 0) AS receivable,
+        COALESCE(SUM(CASE WHEN type = 'creditor' AND status != 'paid' THEN amount ELSE 0 END), 0) AS payable,
+        COUNT(CASE WHEN status = 'overdue' THEN 1 END) AS overdue_count
+      FROM debts`
+    );
+
+    // Stock summary
+    const [[stockSummary]] = await pool.query(
+      `SELECT
+        COUNT(*) AS total_items,
+        COALESCE(SUM(stock), 0) AS total_stock,
+        COALESCE(SUM(stock * cost), 0) AS stock_value,
+        COUNT(CASE WHEN stock <= min_stock THEN 1 END) AS low_stock_count
+      FROM items WHERE status = 'active'`
+    );
+
+    // Calculate net cash flow
+    const revenue = Number(salesSummary?.revenue || 0);
+    const spent = Number(purchasesSummary?.spent || 0);
+    const expenses = Number(expensesSummary?.total || 0);
+    const netCashFlow = revenue - spent - expenses;
+
+    res.json({
+      success: true,
+      period: { startDate, endDate },
+      sales: {
+        count: Number(salesSummary?.count || 0),
+        revenue
+      },
+      purchases: {
+        count: Number(purchasesSummary?.count || 0),
+        spent
+      },
+      expenses: {
+        count: Number(expensesSummary?.count || 0),
+        total: expenses
+      },
+      debts: {
+        receivable: Number(debtsSummary?.receivable || 0),
+        payable: Number(debtsSummary?.payable || 0),
+        overdue_count: Number(debtsSummary?.overdue_count || 0)
+      },
+      stock: {
+        total_items: Number(stockSummary?.total_items || 0),
+        total_stock: Number(stockSummary?.total_stock || 0),
+        stock_value: Number(stockSummary?.stock_value || 0),
+        low_stock_count: Number(stockSummary?.low_stock_count || 0)
+      },
+      summary: {
+        gross_revenue: revenue,
+        total_outflow: spent + expenses,
+        net_cash_flow: netCashFlow
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;

@@ -126,6 +126,29 @@ router.post('/users', async (req, res) => {
       help: true
     };
 
+    // Bursar role gets full access to financial and stock management
+    const bursarPermissions = {
+      dashboard: true,
+      quickSell: true,
+      stock: true,
+      sales: true,
+      purchases: true,
+      items: true,
+      categories: true,
+      debts: true,
+      expenses: true,
+      reports: true,
+      aiSummary: true,
+      userManagement: false,
+      help: true,
+      financialSummary: true,
+      kitchen: true,
+      waterManagement: true
+    };
+
+    // Use bursar permissions if role is bursar
+    const finalPermissions = role === 'bursar' ? bursarPermissions : (permissions || defaultPermissions);
+
     const [result] = await pool.query(
       'INSERT INTO users (username, password, full_name, role, permissions, avatar_color) VALUES (?, ?, ?, ?, ?, ?)',
       [
@@ -133,7 +156,7 @@ router.post('/users', async (req, res) => {
         hashedPassword,
         full_name,
         role || 'staff',
-        JSON.stringify(permissions || defaultPermissions),
+        JSON.stringify(finalPermissions),
         avatar_color || '#10b981'
       ]
     );
@@ -145,7 +168,7 @@ router.post('/users', async (req, res) => {
         username,
         full_name,
         role: role || 'staff',
-        permissions: permissions || defaultPermissions,
+        permissions: finalPermissions,
         avatar_color: avatar_color || '#10b981',
         status: 'active'
       }

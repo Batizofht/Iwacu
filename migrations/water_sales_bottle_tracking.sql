@@ -1,6 +1,7 @@
 -- Add bottle tracking fields to water_sales table
-ALTER TABLE water_sales 
+ALTER TABLE water_sales
 ADD COLUMN IF NOT EXISTS water_name VARCHAR(255),
 ADD COLUMN IF NOT EXISTS capacity INT DEFAULT 20,
 ADD COLUMN IF NOT EXISTS customer_brings_bottle BOOLEAN DEFAULT FALSE,
-ADD COLUMN IF NOT EXISTS includes_bottle BOOLEAN DEFAULT TRUE;
+ADD COLUMN IF NOT EXISTS includes_bottle BOOLEAN DEFAULT TRUE,
+ADD COLUMN IF NOT EXISTS is_bottle_sale BOOLEAN DEFAULT FALSE;

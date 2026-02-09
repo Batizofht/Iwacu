@@ -23,6 +23,7 @@ const productReportsRoutes = require('./routes/product-reports');
 const categoryReportsRoutes = require('./routes/category-reports');
 const storeSettingsRoutes = require('./routes/storeSettings');
 const waterManagementRoutes = require('./routes/waterManagement');
+const kitchenRoutes = require('./routes/kitchen');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -50,6 +51,7 @@ app.use('/api/reports', productReportsRoutes);
 app.use('/api/reports', categoryReportsRoutes);
 app.use('/api/store-settings', storeSettingsRoutes);
 app.use('/api/water-management', waterManagementRoutes);
+app.use('/api/kitchen', kitchenRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
