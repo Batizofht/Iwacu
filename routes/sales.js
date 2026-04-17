@@ -194,7 +194,9 @@ router.get('/', async (req, res) => {
 
 // CREATE sale
 router.post('/', async (req, res) => {
+  const connection = await pool.getConnection();
   try {
+    await connection.beginTransaction();
     const userId = req.headers['x-user-id'];
     const { client_id, payment_method, status = 'Paid', total_amount, discount = 0, final_amount, items, paid_amount, sale_type = 'retail' } = req.body;
     if (!payment_method) return res.status(400).json({ error: 'Payment method is required' });
@@ -207,7 +209,7 @@ router.post('/', async (req, res) => {
     let client_phone = '';
     let client_email = '';
     if (client_id) {
-      const [clients] = await pool.query('SELECT name, phone, email FROM clients WHERE id = ?', [client_id]);
+      const [clients] = await connection.query('SELECT name, phone, email FROM clients WHERE id = ?', [client_id]);
       if (clients.length > 0) {
         client_name = clients[0].name;
         client_phone = clients[0].phone || '';
@@ -224,7 +226,7 @@ router.post('/', async (req, res) => {
     const remainingAmount = Math.max(0, normalizedFinalAmount - normalizedPaidAmount);
 
     // Create sale record
-    const [result] = await pool.query(
+    const [result] = await connection.query(
       'INSERT INTO sales (date, client_id, client_name, items_count, payment_method, total_amount, discount, final_amount, status, sale_type) VALUES (CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [client_id || null, client_name, items.length, payment_method, total_amount, discount, normalizedFinalAmount, normalizedStatus, sale_type || 'retail']
     );
@@ -235,7 +237,7 @@ router.post('/', async (req, res) => {
     let priceUpdates = [];
     for (const item of items) {
       // Get item details
-      const [itemDetails] = await pool.query('SELECT name, stock, price FROM items WHERE id = ?', [item.item_id]);
+      const [itemDetails] = await connection.query('SELECT name, stock, price FROM items WHERE id = ?', [item.item_id]);
       if (itemDetails.length === 0) continue;
 
       const itemName = itemDetails[0].name;
@@ -245,7 +247,7 @@ router.post('/', async (req, res) => {
       const totalPrice = item.quantity * item.unit_price;
 
       // Insert sale item
-      await pool.query(
+      await connection.query(
         'INSERT INTO sale_items (sale_id, item_id, item_name, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?, ?)',
         [saleId, item.item_id, itemName, item.quantity, item.unit_price, totalPrice]
       );
@@ -253,16 +255,20 @@ router.post('/', async (req, res) => {
       // Save current stock to previous_stock BEFORE updating
       await savePreviousStock(item.item_id, currentStock);
 
-      // Update stock
-      await pool.query(
+      // Update stock in both items and stock tables (must stay in sync)
+      await connection.query(
         'UPDATE items SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [newStock, item.item_id]
+      );
+      await connection.query(
+        'UPDATE stock SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE item_id = ?',
         [newStock, item.item_id]
       );
 
       // Update item price if it has changed (automatic price update feature)
       if (item.unit_price !== currentPrice) {
         console.log(`🔄 Updating price for item ${itemName} (ID: ${item.item_id}): ${currentPrice} -> ${item.unit_price}`);
-        await pool.query(
+        await connection.query(
           'UPDATE items SET price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
           [item.unit_price, item.item_id]
         );
@@ -278,19 +284,21 @@ router.post('/', async (req, res) => {
       const dueDate = due.toISOString().split('T')[0];
 
       const debtDescription = `Sale #${saleId}`;
-      const [debtResult] = await pool.query(
+      const [debtResult] = await connection.query(
         'INSERT INTO debts (type, person, amount, date, due_date, description, status, phone, email) VALUES (?, ?, ?, CURDATE(), ?, ?, ?, ?, ?)',
         ['debtor', client_name, normalizedFinalAmount, dueDate, debtDescription, 'pending', client_phone, client_email]
       );
       debtId = debtResult.insertId;
 
       if (normalizedPaidAmount > 0) {
-        await pool.query(
+        await connection.query(
           'INSERT INTO debt_installments (debt_id, amount, payment_date, notes) VALUES (?, ?, CURDATE(), ?)',
           [debtId, normalizedPaidAmount, `Initial payment for Sale #${saleId}`]
         );
       }
     }
+
+    await connection.commit();
 
     // Log activity
     if (userId) {
@@ -347,7 +355,7 @@ router.post('/', async (req, res) => {
       }).catch(err => console.error('Notification error:', err));
     }
 
-    // Get the complete sale data with items details
+    // Get the complete sale data with items details (read after commit, use pool)
     const [saleItems] = await pool.query(`
       SELECT si.*, i.name as item_name, i.sku, i.category_id, i.price, i.cost 
       FROM sale_items si 
@@ -381,7 +389,10 @@ router.post('/', async (req, res) => {
       success: true
     });
   } catch (error) {
+    await connection.rollback();
     res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
   }
 });
 
@@ -438,6 +449,34 @@ router.patch('/:id/status', async (req, res) => {
     res.json({ success: true, id, status });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/sales/:id/items — fetch itemized sale details
+router.get('/:id/items', async (req, res) => {
+  try {
+    const saleId = parseInt(req.params.id);
+    if (isNaN(saleId)) return res.status(400).json({ error: 'Invalid sale ID' });
+
+    const [items] = await pool.query(
+      `SELECT
+        si.id,
+        si.item_id,
+        i.name AS item_name,
+        si.quantity,
+        si.unit_price,
+        (si.quantity * si.unit_price) AS subtotal
+       FROM sale_items si
+       JOIN items i ON i.id = si.item_id
+       WHERE si.sale_id = ?
+       ORDER BY si.id ASC`,
+      [saleId]
+    );
+
+    res.json({ saleId, items });
+  } catch (err) {
+    console.error('Error fetching sale items:', err);
+    res.status(500).json({ error: 'Failed to fetch sale items' });
   }
 });
 

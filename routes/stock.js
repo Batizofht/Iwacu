@@ -29,12 +29,12 @@ router.get('/', async (req, res) => {
         i.cost,
         i.price,
         COALESCE(c.name, '') AS category,
-        COALESCE(i.stock, 0) AS current_stock,
-         COALESCE(i.min_stock, 0) AS min_stock,
+        COALESCE(s.current_stock, i.stock, 0) AS current_stock,
+        COALESCE(i.min_stock, 0) AS min_stock,
         CASE
-            WHEN COALESCE(i.stock, 0) <= 0
+            WHEN COALESCE(s.current_stock, i.stock, 0) <= 0
             THEN 'Out of Stock'
-            WHEN COALESCE(i.stock, 0) <= COALESCE(i.min_stock, 0)
+            WHEN COALESCE(s.current_stock, i.stock, 0) <= COALESCE(i.min_stock, 0)
             THEN 'Low Stock'
             ELSE 'In Stock'
         END AS stock_status,
@@ -69,10 +69,11 @@ router.get('/', async (req, res) => {
             JOIN purchase_orders po ON poi.purchase_order_id = po.id
             WHERE poi.item_id = i.id AND po.status = 'pending'
         ), 0) AS incoming_stock,
-        COALESCE(i.stock, 0) * COALESCE(i.cost, 0) AS stock_value,
+        COALESCE(s.current_stock, i.stock, 0) * COALESCE(i.cost, 0) AS stock_value,
         i.status
       FROM items i
       LEFT JOIN categories c ON i.category_id = c.id
+      LEFT JOIN stock s ON s.item_id = i.id
       WHERE i.status = 'active'
       ORDER BY i.name
     `);
