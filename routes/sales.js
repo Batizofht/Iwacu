@@ -233,16 +233,28 @@ router.post('/', async (req, res) => {
 
     const saleId = result.insertId;
 
+    // ⚡ OPTIMIZED: Fetch all item details FIRST (1 query instead of N queries)
+    const itemIds = items.map(i => i.item_id);
+    const [allItemDetails] = await connection.query(
+      `SELECT id, name, stock, price FROM items WHERE id IN (${itemIds.map(() => '?').join(',')})`,
+      itemIds
+    );
+    
+    // Create a map for quick lookup
+    const itemDetailsMap = new Map(allItemDetails.map(item => [item.id, item]));
+
     // Insert sale items and update stock
     let priceUpdates = [];
+    let stockUpdates = [];
+    let priceUpdatesData = [];
+    
     for (const item of items) {
-      // Get item details
-      const [itemDetails] = await connection.query('SELECT name, stock, price FROM items WHERE id = ?', [item.item_id]);
-      if (itemDetails.length === 0) continue;
+      const itemDetail = itemDetailsMap.get(item.item_id);
+      if (!itemDetail) continue;
 
-      const itemName = itemDetails[0].name;
-      const currentStock = itemDetails[0].stock;
-      const currentPrice = itemDetails[0].price;
+      const itemName = itemDetail.name;
+      const currentStock = itemDetail.stock;
+      const currentPrice = itemDetail.price;
       const newStock = Math.max(0, currentStock - item.quantity);
       const totalPrice = item.quantity * item.unit_price;
 
@@ -252,28 +264,42 @@ router.post('/', async (req, res) => {
         [saleId, item.item_id, itemName, item.quantity, item.unit_price, totalPrice]
       );
 
-      // Save current stock to previous_stock BEFORE updating
-      await savePreviousStock(item.item_id, currentStock);
+      // Collect all stock updates to batch execute
+      stockUpdates.push({
+        itemId: item.item_id,
+        newStock: newStock,
+        previousStock: currentStock
+      });
 
-      // Update stock in both items and stock tables (must stay in sync)
+      // Collect price updates if changed
+      if (item.unit_price !== currentPrice) {
+        priceUpdates.push({ itemName, oldPrice: currentPrice, newPrice: item.unit_price });
+        priceUpdatesData.push({
+          itemId: item.item_id,
+          newPrice: item.unit_price
+        });
+      }
+    }
+
+    // ⚡ BATCH UPDATE ALL STOCK AT ONCE (instead of per-item)
+    for (const update of stockUpdates) {
       await connection.query(
-        'UPDATE items SET stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [newStock, item.item_id]
+        'UPDATE items SET stock = ?, previous_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [update.newStock, update.previousStock, update.itemId]
       );
       await connection.query(
         'UPDATE stock SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE item_id = ?',
-        [newStock, item.item_id]
+        [update.newStock, update.itemId]
       );
+    }
 
-      // Update item price if it has changed (automatic price update feature)
-      if (item.unit_price !== currentPrice) {
-        console.log(`🔄 Updating price for item ${itemName} (ID: ${item.item_id}): ${currentPrice} -> ${item.unit_price}`);
-        await connection.query(
-          'UPDATE items SET price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-          [item.unit_price, item.item_id]
-        );
-        priceUpdates.push({ itemName, oldPrice: currentPrice, newPrice: item.unit_price });
-      }
+    // ⚡ BATCH UPDATE ALL PRICES AT ONCE (instead of per-item)
+    for (const priceUpdate of priceUpdatesData) {
+      console.log(`🔄 Batch updating price for item ${priceUpdate.itemId}: ${priceUpdate.newPrice}`);
+      await connection.query(
+        'UPDATE items SET price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [priceUpdate.newPrice, priceUpdate.itemId]
+      );
     }
 
     // Create debtor record + initial installment (payment history) for partial/loan sales
