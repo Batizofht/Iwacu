@@ -22,7 +22,7 @@ async function createAndSendNotification({
   entityType = null
 }) {
   try {
-    // Create notification in database
+    // ⚡ Create notification in database (ONLY this must complete before returning)
     const [result] = await pool.query(
       `INSERT INTO notifications 
        (type, title, message, user_id, target_role, entity_id, entity_type)
@@ -31,8 +31,27 @@ async function createAndSendNotification({
     );
 
     const notificationId = result.insertId;
+    console.log(`✅ Notification created: ID ${notificationId}`);
 
-    // Get notification details with actor info
+    // ⚡ FIRE-AND-FORGET: Send emails and push notifications ASYNCHRONOUSLY
+    // This prevents blocking the API response by 5+ minutes
+    sendEmailsAndPushNotificationsAsync(notificationId, type).catch(err => 
+      console.error('Async notification delivery error:', err)
+    );
+
+    return notificationId;
+  } catch (error) {
+    console.error('Error creating notification:', error);
+    throw error;
+  }
+}
+
+// ⚡ Async function to send emails and push notifications WITHOUT blocking
+async function sendEmailsAndPushNotificationsAsync(notificationId, type) {
+  try {
+    console.log(`📨 Starting async email/push delivery for notification ${notificationId}`);
+
+    // Get notification details
     const [notifications] = await pool.query(
       `SELECT n.*, u.full_name as actor_name, u.avatar_color as actor_color
        FROM notifications n
@@ -41,94 +60,120 @@ async function createAndSendNotification({
       [notificationId]
     );
 
-    if (notifications.length > 0) {
-      const notification = notifications[0];
+    if (notifications.length === 0) {
+      console.log(`⚠️ Notification ${notificationId} not found`);
+      return;
+    }
 
-      const isEmailTypeAllowed = notification.type === 'sale' || notification.type === 'purchase';
+    const notification = notifications[0];
+    const isEmailTypeAllowed = notification.type === 'sale' || notification.type === 'purchase';
 
-      // Get superadmin users to send email notification
-      const [superadminUsers] = await pool.query(
-        'SELECT u.notification_email as user_email, ns.notification_email as settings_email, ns.email_notifications, ns.notify_on_sale, ns.notify_on_purchase FROM users u LEFT JOIN notification_settings ns ON u.id = ns.user_id WHERE u.role = ? AND (u.notification_email IS NOT NULL OR ns.notification_email IS NOT NULL)',
-        ['superadmin']
+    // Get superadmin users to send email notification
+    const [superadminUsers] = await pool.query(
+      'SELECT u.notification_email as user_email, ns.notification_email as settings_email, ns.email_notifications, ns.notify_on_sale, ns.notify_on_purchase FROM users u LEFT JOIN notification_settings ns ON u.id = ns.user_id WHERE u.role = ? AND (u.notification_email IS NOT NULL OR ns.notification_email IS NOT NULL)',
+      ['superadmin']
+    );
+
+    // Send emails in background (don't wait)
+    if (isEmailTypeAllowed && superadminUsers.length > 0) {
+      console.log(`📧 Sending emails to ${superadminUsers.length} superadmins in background...`);
+      
+      // Start email sending but don't await it
+      sendEmailsInBackground(superadminUsers, notification).catch(err => 
+        console.error('Email delivery error:', err)
       );
+    }
 
-      // Send emails to superadmins with email notifications enabled
-      for (const admin of superadminUsers) {
-        const adminEmail = admin.user_email || admin.settings_email;
-        const emailEnabled = admin.email_notifications === null || admin.email_notifications === undefined
-          ? true
-          : Boolean(admin.email_notifications);
+    // Get push subscriptions and send push notifications in background (don't wait)
+    const [pushSubscriptions] = await pool.query(
+      `SELECT ps.* FROM push_subscriptions ps
+       JOIN users u ON ps.user_id = u.id
+       JOIN notification_settings ns ON u.id = ns.user_id
+       WHERE u.role = 'superadmin' 
+       AND (ns.push_notifications IS NULL OR ns.push_notifications = 1)`
+    );
 
-        const typeEnabled = notification.type === 'sale'
-          ? (admin.notify_on_sale === null || admin.notify_on_sale === undefined ? true : Boolean(admin.notify_on_sale))
-          : (admin.notify_on_purchase === null || admin.notify_on_purchase === undefined ? true : Boolean(admin.notify_on_purchase));
-        
-        if (isEmailTypeAllowed && adminEmail && emailEnabled && typeEnabled) {
-          try {
-            // Send email notification
-            await emailService.sendNotification(notification, adminEmail);
-            console.log(`📧 Email sent to superadmin: ${adminEmail}`);
-          } catch (emailError) {
-            console.error(`Failed to send email to ${adminEmail}:`, emailError.message);
-          }
-        }
+    if (pushSubscriptions.length > 0) {
+      console.log(`📱 Sending push to ${pushSubscriptions.length} subscriptions in background...`);
+      
+      // Start push sending but don't await it
+      sendPushNotificationsInBackground(pushSubscriptions, notification, notificationId).catch(err => 
+        console.error('Push delivery error:', err)
+      );
+    }
+
+    console.log(`✅ Notification delivery queued (async)`);
+  } catch (error) {
+    console.error('Error in async notification delivery:', error);
+  }
+}
+
+// Send emails in background without blocking
+async function sendEmailsInBackground(superadminUsers, notification) {
+  for (const admin of superadminUsers) {
+    try {
+      const adminEmail = admin.user_email || admin.settings_email;
+      const emailEnabled = admin.email_notifications === null || admin.email_notifications === undefined
+        ? true
+        : Boolean(admin.email_notifications);
+
+      const typeEnabled = notification.type === 'sale'
+        ? (admin.notify_on_sale === null || admin.notify_on_sale === undefined ? true : Boolean(admin.notify_on_sale))
+        : (admin.notify_on_purchase === null || admin.notify_on_purchase === undefined ? true : Boolean(admin.notify_on_purchase));
+      
+      if (adminEmail && emailEnabled && typeEnabled) {
+        console.log(`📧 Sending email to ${adminEmail}...`);
+        await emailService.sendNotification(notification, adminEmail);
+        console.log(`✅ Email sent to ${adminEmail}`);
       }
+    } catch (emailError) {
+      console.error(`❌ Failed to send email:`, emailError.message);
+    }
+  }
+}
 
-      // Send PUSH notifications to all superadmins
-      const [pushSubscriptions] = await pool.query(
-        `SELECT ps.* FROM push_subscriptions ps
-         JOIN users u ON ps.user_id = u.id
-         JOIN notification_settings ns ON u.id = ns.user_id
-         WHERE u.role = 'superadmin' 
-         AND (ns.push_notifications IS NULL OR ns.push_notifications = 1)`,
-      );
+// Send push notifications in background without blocking
+async function sendPushNotificationsInBackground(pushSubscriptions, notification, notificationId) {
+  for (const sub of pushSubscriptions) {
+    try {
+      const payload = JSON.stringify({
+        title: notification.title,
+        body: notification.message,
+        icon: '/icons/icon.webp',
+        badge: '/icons/badge.png',
+        tag: `notification-${notificationId}`,
+        data: {
+          notificationId,
+          type: notification.type,
+          url: '/'
+        }
+      });
 
-      console.log(`📱 Found ${pushSubscriptions.length} push subscriptions`);
-
-      // Send push notification to each subscription
-      for (const sub of pushSubscriptions) {
-        try {
-          const payload = JSON.stringify({
-            title: notification.title,
-            body: notification.message,
-            icon: '/icons/icon.webp',
-            badge: '/icons/badge.png',
-            tag: `notification-${notificationId}`,
-            data: {
-              notificationId,
-              type: notification.type,
-              url: '/'
-            }
-          });
-
-          await webpush.sendNotification(
-            {
-              endpoint: sub.endpoint,
-              keys: {
-                p256dh: sub.p256dh,
-                auth: sub.auth
-              }
-            },
-            payload
-          );
-          
-          console.log(`📱 Push sent to user ${sub.user_id}`);
-        } catch (pushError) {
-          console.error(`Failed to send push to user ${sub.user_id}:`, pushError.message);
-          
-          // If subscription is gone/expired (410), remove it from database
-          if (pushError.statusCode === 410) {
-            await pool.query('DELETE FROM push_subscriptions WHERE id = ?', [sub.id]);
-            console.log(`🗑️ Removed expired subscription for user ${sub.user_id}`);
+      await webpush.sendNotification(
+        {
+          endpoint: sub.endpoint,
+          keys: {
+            p256dh: sub.p256dh,
+            auth: sub.auth
           }
+        },
+        payload
+      );
+      
+      console.log(`✅ Push sent to user ${sub.user_id}`);
+    } catch (pushError) {
+      console.error(`❌ Failed to send push to user ${sub.user_id}:`, pushError.message);
+      
+      // If subscription is gone/expired (410), remove it from database
+      if (pushError.statusCode === 410) {
+        try {
+          await pool.query('DELETE FROM push_subscriptions WHERE id = ?', [sub.id]);
+          console.log(`🗑️ Removed expired subscription for user ${sub.user_id}`);
+        } catch (deleteErr) {
+          console.error('Error deleting subscription:', deleteErr);
         }
       }
     }
-
-    return notificationId;
-  } catch (error) {
-    console.error('Error creating notification:', error);
-    throw error;
   }
 }
 

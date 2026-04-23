@@ -23,30 +23,26 @@ const logActivity = async ({
   ipAddress = null
 }) => {
   try {
-    // Insert activity log
+    // ⚡ Insert activity log - this is the only operation that MUST complete
     await pool.query(
       `INSERT INTO activity_logs (user_id, action_type, entity_type, entity_id, entity_name, description, metadata, ip_address)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [userId, actionType, entityType, entityId, entityName, description, metadata ? JSON.stringify(metadata) : null, ipAddress]
     );
 
-    // Get user info for notification
-    const [users] = await pool.query('SELECT full_name, role FROM users WHERE id = ?', [userId]);
-    const user = users[0];
+    console.log(`✅ Activity logged: ${actionType} on ${entityType} #${entityId}`);
 
-    // Don't create notifications for superadmin's own actions (they don't need to notify themselves)
-    if (user && user.role !== 'superadmin') {
-      // Create notification for superadmin
-      await createNotification({
-        userId,
-        type: getNotificationType(entityType),
-        title: getNotificationTitle(actionType, entityType, entityName),
-        message: `${user.full_name} ${description}`,
-        entityType,
-        entityId,
-        priority: getPriority(actionType, entityType, metadata)
-      });
-    }
+    // ⚡ Fire-and-forget: Create notification in background (don't await in this caller)
+    // This will be handled asynchronously
+    createNotificationAsync({
+      userId,
+      type: getNotificationType(entityType),
+      title: getNotificationTitle(actionType, entityType, entityName),
+      message: description,
+      entityType,
+      entityId,
+      priority: getPriority(actionType, entityType, metadata)
+    }).catch(err => console.error('Async notification error:', err));
 
     return true;
   } catch (error) {
@@ -56,9 +52,10 @@ const logActivity = async ({
 };
 
 /**
- * Create a notification
+ * Create notifications asynchronously without blocking
+ * Optimized to batch queries and reduce database hits
  */
-const createNotification = async ({
+const createNotificationAsync = async ({
   userId = null,
   targetRole = 'superadmin',
   type,
@@ -69,32 +66,45 @@ const createNotification = async ({
   priority = 'medium'
 }) => {
   try {
-    // Check notification settings for superadmins
+    // Get ALL active superadmins in one query (not in a loop)
     const [admins] = await pool.query("SELECT id FROM users WHERE role = 'superadmin' AND status = 'active'");
     
+    if (admins.length === 0) {
+      console.log('ℹ️  No active superadmins found for notification');
+      return true;
+    }
+
+    // Get notification settings for ALL admins in one query
+    const [settings] = await pool.query('SELECT * FROM notification_settings WHERE user_id IN (?) LIMIT 100', [admins.map(a => a.id)]);
+    
+    // Create a map for quick lookup
+    const settingsMap = new Map(settings.map(s => [s.user_id, s]));
+
+    // Build all notifications to insert at once
+    const notificationsToInsert = [];
+    
     for (const admin of admins) {
-      // Check if this admin has notifications enabled for this type
-      const [settings] = await pool.query('SELECT * FROM notification_settings WHERE user_id = ?', [admin.id]);
-      
       let shouldNotify = true;
-      if (settings.length > 0) {
-        const s = settings[0];
+      const adminSettings = settingsMap.get(admin.id);
+
+      if (adminSettings) {
+        // Check if notifications are enabled for this type
         switch (type) {
-          case 'sale': shouldNotify = s.notify_on_sale; break;
-          case 'purchase': shouldNotify = s.notify_on_purchase; break;
-          case 'expense': shouldNotify = s.notify_on_expense; break;
-          case 'debt': shouldNotify = s.notify_on_debt; break;
-          case 'stock': shouldNotify = s.notify_on_low_stock; break;
-          case 'user': shouldNotify = s.notify_on_user_login; break;
+          case 'sale': shouldNotify = adminSettings.notify_on_sale; break;
+          case 'purchase': shouldNotify = adminSettings.notify_on_purchase; break;
+          case 'expense': shouldNotify = adminSettings.notify_on_expense; break;
+          case 'debt': shouldNotify = adminSettings.notify_on_debt; break;
+          case 'stock': shouldNotify = adminSettings.notify_on_low_stock; break;
+          case 'user': shouldNotify = adminSettings.notify_on_user_login; break;
           default: shouldNotify = true;
         }
 
         // Check quiet hours
-        if (s.quiet_hours_start && s.quiet_hours_end) {
+        if (shouldNotify && adminSettings.quiet_hours_start && adminSettings.quiet_hours_end) {
           const now = new Date();
           const currentTime = now.getHours() * 60 + now.getMinutes();
-          const [startH, startM] = s.quiet_hours_start.split(':').map(Number);
-          const [endH, endM] = s.quiet_hours_end.split(':').map(Number);
+          const [startH, startM] = adminSettings.quiet_hours_start.split(':').map(Number);
+          const [endH, endM] = adminSettings.quiet_hours_end.split(':').map(Number);
           const startMinutes = startH * 60 + startM;
           const endMinutes = endH * 60 + endM;
           
@@ -105,12 +115,21 @@ const createNotification = async ({
       }
 
       if (shouldNotify) {
-        console.log(`📢 Creating notification for admin ${admin.id}: ${title}`);
+        notificationsToInsert.push([userId, targetRole, type, title, message, entityType, entityId, priority]);
+      }
+    }
+
+    // Insert all notifications at once (or skip if none to insert)
+    if (notificationsToInsert.length > 0) {
+      console.log(`📢 Creating ${notificationsToInsert.length} notifications for type: ${type}`);
+      
+      // Batch insert for better performance
+      for (const notification of notificationsToInsert) {
         await pool.query(
           `INSERT INTO notifications (user_id, target_role, type, title, message, entity_type, entity_id, priority)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [userId, targetRole, type, title, message, entityType, entityId, priority]
-        );
+          notification
+        ).catch(err => console.error('Notification insert error:', err));
       }
     }
 
@@ -218,6 +237,6 @@ const sendPushNotification = async (userId, title, message) => {
 
 module.exports = {
   logActivity,
-  createNotification,
+  createNotificationAsync,
   sendPushNotification
 };

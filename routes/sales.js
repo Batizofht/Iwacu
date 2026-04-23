@@ -300,12 +300,13 @@ router.post('/', async (req, res) => {
 
     await connection.commit();
 
-    // Log activity
+    // ⚡ FIRE-AND-FORGET: Log activity async without blocking API response
+    // This was causing 5-minute delays by querying ALL superadmins and their settings
     if (userId) {
-      console.log(`📝 Logging sale activity for user ${userId}`);
+      console.log(`📝 Queuing sale activity for async logging (user ${userId})`);
       
-      // Main sale activity
-      await logActivity({
+      // Main sale activity - fire and forget
+      logActivity({
         userId: parseInt(userId),
         actionType: 'create',
         entityType: 'sale',
@@ -313,16 +314,16 @@ router.post('/', async (req, res) => {
         entityName: `Sale #${saleId}`,
         description: `yagurishije FRW ${normalizedFinalAmount.toLocaleString()} kuri ${client_name}`,
         metadata: { final_amount: normalizedFinalAmount, status: normalizedStatus, items_count: items.length, payment_method, client_name }
-      });
+      }).catch(err => console.error('Activity logging error:', err));
 
-      // Log price updates if any
+      // Log price updates if any - fire and forget
       if (priceUpdates.length > 0) {
         for (const update of priceUpdates) {
           // Find the item ID for this update
           const soldItem = items.find(item => item.unit_price === update.newPrice);
           const itemId = soldItem ? soldItem.item_id : null;
           
-          await logActivity({
+          logActivity({
             userId: parseInt(userId),
             actionType: 'update',
             entityType: 'item',
@@ -335,14 +336,14 @@ router.post('/', async (req, res) => {
               saleId: saleId,
               updatedDuringSale: true
             }
-          });
+          }).catch(err => console.error('Activity logging error:', err));
         }
       }
     } else {
       console.log('⚠️ No userId provided for sale activity logging');
     }
 
-    // Create notification for sale (async, don't wait)
+    // ⚡ FIRE-AND-FORGET: Create notification async without blocking API response
     if (userId) {
       createAndSendNotification({
         type: 'sale',
@@ -355,13 +356,16 @@ router.post('/', async (req, res) => {
       }).catch(err => console.error('Notification error:', err));
     }
 
-    // Get the complete sale data with items details (read after commit, use pool)
-    const [saleItems] = await pool.query(`
-      SELECT si.*, i.name as item_name, i.sku, i.category_id, i.price, i.cost 
-      FROM sale_items si 
-      LEFT JOIN items i ON si.item_id = i.id 
-      WHERE si.sale_id = ?
-    `, [saleId]);
+    // Build sale items response from data we already have in memory (no extra query needed!)
+    const saleItems = items.map((item, index) => ({
+      id: index + 1, // Temporary ID for response
+      sale_id: saleId,
+      item_id: item.item_id,
+      item_name: item.item_name || '',
+      quantity: item.quantity,
+      unit_price: item.unit_price,
+      total_price: item.quantity * item.unit_price
+    }));
 
     res.json({
       id: saleId,
