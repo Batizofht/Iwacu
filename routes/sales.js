@@ -560,4 +560,104 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// GLOBAL SEARCH - Search across ALL sales without pagination limit
+router.get('/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+    
+    if (!q || q.trim().length < 1) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+    
+    const searchTerm = `%${q.trim()}%`;
+    const searchTermExact = q.trim();
+    
+    console.log('🔍 Global sales search for:', q);
+    
+    // Search across all sales with their items - NO LIMIT
+    const [sales] = await pool.query(`
+      SELECT DISTINCT s.* 
+      FROM sales s
+      LEFT JOIN sale_items si ON s.id = si.sale_id
+      LEFT JOIN items i ON si.item_id = i.id
+      WHERE 
+        s.client_name LIKE ? 
+        OR si.item_name LIKE ?
+        OR i.name LIKE ?
+        OR i.sku LIKE ?
+        OR s.id = ?
+        OR s.payment_method LIKE ?
+      ORDER BY s.created_at DESC
+    `, [searchTerm, searchTerm, searchTerm, searchTerm, parseInt(searchTermExact) || 0, searchTerm]);
+    
+    console.log(`✅ Found ${sales.length} sales matching "${q}"`);
+    
+    // Get items and additional details for each sale
+    const salesWithItems = [];
+    for (const sale of sales) {
+      const [items] = await pool.query(`
+        SELECT
+          si.id,
+          si.sale_id,
+          si.item_id,
+          si.quantity,
+          si.unit_price,
+          si.total_price,
+          i.name AS item_name,
+          i.cost AS item_cost
+        FROM sale_items si
+        LEFT JOIN items i ON si.item_id = i.id
+        WHERE si.sale_id = ?
+      `, [sale.id]);
+
+      // Fetch client phone if client_id exists
+      let client_phone = '';
+      if (sale.client_id) {
+        const [clients] = await pool.query('SELECT phone FROM clients WHERE id = ?', [sale.client_id]);
+        if (clients.length > 0) {
+          client_phone = clients[0].phone || '';
+        }
+      }
+
+      const saleFinalAmount = Number(sale.final_amount) || 0;
+      let paid_so_far = sale.status === 'Paid' ? saleFinalAmount : 0;
+      let balance = Math.max(0, saleFinalAmount - paid_so_far);
+
+      const [linkedDebts] = await pool.query(
+        "SELECT id, amount FROM debts WHERE type = 'debtor' AND description = ? LIMIT 1",
+        [`Sale #${sale.id}`]
+      );
+
+      if (linkedDebts.length > 0) {
+        const debt = linkedDebts[0];
+        const [[{ total_paid }]] = await pool.query(
+          'SELECT COALESCE(SUM(amount), 0) as total_paid FROM debt_installments WHERE debt_id = ?',
+          [debt.id]
+        );
+        const debtAmount = Number(debt.amount) || 0;
+        paid_so_far = Number(total_paid) || 0;
+        balance = Math.max(0, debtAmount - paid_so_far);
+      }
+
+      salesWithItems.push({
+        ...sale,
+        client_phone,
+        items,
+        paid_so_far,
+        balance
+      });
+    }
+    
+    res.json({
+      data: salesWithItems,
+      searchQuery: q,
+      totalResults: salesWithItems.length,
+      isSearchResult: true
+    });
+  } catch (error) {
+    console.error('❌ Sales search error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

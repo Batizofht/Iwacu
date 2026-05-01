@@ -516,4 +516,101 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// GLOBAL SEARCH - Search across ALL purchase orders without pagination limit
+router.get('/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+    
+    if (!q || q.trim().length < 1) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+    
+    const searchTerm = `%${q.trim()}%`;
+    const searchTermExact = q.trim();
+    
+    console.log('🔍 Global purchase orders search for:', q);
+    
+    // Search across all purchase orders with their items and suppliers - NO LIMIT
+    const [orders] = await pool.query(`
+      SELECT DISTINCT po.*, s.name as supplier_name, s.phone as supplier_phone
+      FROM purchase_orders po
+      LEFT JOIN suppliers s ON po.supplier_id = s.id
+      LEFT JOIN purchase_order_items poi ON po.id = poi.purchase_order_id
+      LEFT JOIN items i ON poi.item_id = i.id
+      WHERE 
+        po.po_number LIKE ?
+        OR s.name LIKE ?
+        OR s.phone LIKE ?
+        OR i.name LIKE ?
+        OR i.sku LIKE ?
+        OR po.id = ?
+      ORDER BY po.created_at DESC
+    `, [searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, parseInt(searchTermExact) || 0]);
+    
+    console.log(`✅ Found ${orders.length} purchase orders matching "${q}"`);
+    
+    // Get items and additional details for each order
+    const ordersWithDetails = [];
+    for (const order of orders) {
+      // Get purchase order items
+      const [items] = await pool.query(`
+        SELECT poi.*, i.name as item_name, i.sku, i.category_id, i.price, i.cost 
+        FROM purchase_order_items poi 
+        LEFT JOIN items i ON poi.item_id = i.id 
+        WHERE poi.purchase_order_id = ?
+      `, [order.id]);
+
+      // Get supplier details
+      let supplier = null;
+      if (order.supplier_id) {
+        const [suppliers] = await pool.query('SELECT * FROM suppliers WHERE id = ?', [order.supplier_id]);
+        supplier = suppliers[0] || null;
+      }
+
+      // Get debt balance if purchase is on credit
+      let total_paid = 0;
+      let balance = 0;
+      let debt_status = null;
+      
+      if (order.payment_status === 'on_credit' && order.debt_id) {
+        const [[debtInfo]] = await pool.query(`
+          SELECT 
+            d.status as debt_status,
+            COALESCE(SUM(di.amount), 0) as total_paid,
+            (d.amount - COALESCE(SUM(di.amount), 0)) as balance
+          FROM debts d
+          LEFT JOIN debt_installments di ON d.id = di.debt_id
+          WHERE d.id = ?
+          GROUP BY d.id
+        `, [order.debt_id]);
+        
+        if (debtInfo) {
+          debt_status = debtInfo.debt_status;
+          total_paid = parseFloat(debtInfo.total_paid) || 0;
+          balance = parseFloat(debtInfo.balance) || 0;
+        }
+      }
+      
+      ordersWithDetails.push({
+        ...order,
+        supplier,
+        items,
+        total_paid,
+        balance,
+        debt_status
+      });
+    }
+    
+    res.json({
+      data: ordersWithDetails,
+      searchQuery: q,
+      totalResults: ordersWithDetails.length,
+      isSearchResult: true
+    });
+  } catch (error) {
+    console.error('❌ Purchase orders search error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
